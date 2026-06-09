@@ -1,0 +1,107 @@
+function uploadATSAttachmentToSupabase() {
+  const SUPABASE_URL = '';
+  const SUPABASE_KEY = '';
+  const BUCKET_NAME = '';
+
+  const searchQuery = 'subject:"ET - ATS Inventory Report" has:attachment newer_than:2d';
+  const threads = GmailApp.search(searchQuery, 0, 1);
+
+  if (threads.length === 0) {
+    Logger.log('No ATS email found.');
+    return;
+  }
+
+  const message = threads[0].getMessages().pop();
+  const subject = message.getSubject();
+  const attachments = message.getAttachments();
+
+  if (attachments.length === 0) {
+    Logger.log('No attachment found.');
+    return;
+  }
+
+  const attachment = attachments[0];
+  const fileName = attachment.getName();
+
+  const today = Utilities.formatDate(
+    new Date(),
+    Session.getScriptTimeZone(),
+    'yyyy-MM-dd'
+  );
+
+  const cleanFileName = fileName.replace(/\s+/g, '-');
+  const storagePath = `${today}/${cleanFileName}`;
+
+  try {
+    // Upload file to Supabase Storage
+    const uploadUrl = `${SUPABASE_URL}/storage/v1/object/${BUCKET_NAME}/${storagePath}`;
+
+    const uploadResponse = UrlFetchApp.fetch(uploadUrl, {
+      method: 'post',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        'Content-Type': attachment.getContentType(),
+        'x-upsert': 'true'
+      },
+      payload: attachment.getBytes(),
+      muteHttpExceptions: true
+    });
+
+    const uploadCode = uploadResponse.getResponseCode();
+    const uploadText = uploadResponse.getContentText();
+
+    if (uploadCode < 200 || uploadCode >= 300) {
+      throw new Error(uploadText);
+    }
+
+    // Insert import log
+    const logPayload = [{
+      email_subject: subject,
+      source_file: fileName,
+      storage_path: storagePath,
+      status: 'uploaded',
+      error_message: null
+    }];
+
+    const logUrl = `${SUPABASE_URL}/rest/v1/ats_import_logs`;
+
+    const logResponse = UrlFetchApp.fetch(logUrl, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        Prefer: 'return=minimal'
+      },
+      payload: JSON.stringify(logPayload),
+      muteHttpExceptions: true
+    });
+
+    Logger.log('Upload success: ' + storagePath);
+    Logger.log(logResponse.getContentText());
+
+  } catch (error) {
+    Logger.log('Upload failed: ' + error.message);
+
+    const errorLogPayload = [{
+      email_subject: subject,
+      source_file: fileName,
+      storage_path: storagePath,
+      status: 'failed',
+      error_message: error.message
+    }];
+
+    UrlFetchApp.fetch(`${SUPABASE_URL}/rest/v1/ats_import_logs`, {
+      method: 'post',
+      contentType: 'application/json',
+      headers: {
+        apikey: SUPABASE_KEY,
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        Prefer: 'return=minimal'
+      },
+      payload: JSON.stringify(errorLogPayload),
+      muteHttpExceptions: true
+    });
+  }
+}
